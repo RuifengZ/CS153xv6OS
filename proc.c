@@ -141,16 +141,21 @@ userinit(void)
 
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
+  
+  //p->priority = 0;
+
+  acquire(&tickslock);
+  p->ctick = ticks;
+  release(&tickslock);
 
   // this assignment to p->state lets other cores
   // run this process. the acquire forces the above
   // writes to be visible, and the lock is also needed
   // because the assignment might not be atomic.
   acquire(&ptable.lock);
-
   p->state = RUNNABLE;
-
   release(&ptable.lock);
+
 }
 
 // Grow current process's memory by n bytes.
@@ -197,6 +202,7 @@ fork(void)
     return -1;
   }
   np->sz = curproc->sz;
+  np->priority = curproc->priority;
   np->parent = curproc;
   *np->tf = *curproc->tf;
 
@@ -211,6 +217,11 @@ fork(void)
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
   pid = np->pid;
+
+  acquire(&tickslock);
+  np->stick = ticks;
+  np->ctick = ticks;
+  release(&tickslock);
 
   acquire(&ptable.lock);
 
@@ -262,6 +273,12 @@ exit(int status)
     }
   }
 
+  acquire(&tickslock);
+  curproc->stick = ticks - curproc->stick;
+  cprintf(" turn around time: %d \n", ((curproc->stick)));
+  cprintf(" WAIT TIME: %d \n", curproc->etick);
+  release(&tickslock);
+
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
   sched();
@@ -284,6 +301,7 @@ wait(int *status)
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->parent != curproc)
         continue;
+      //p->priority = curproc->priority;
       havekids = 1;
       if(p->state == ZOMBIE){
         // Found one.
@@ -297,6 +315,10 @@ wait(int *status)
         p->name[0] = 0;
         p->killed = 0;
         p->state = UNUSED;
+	p->priority = 0;
+	p->ctick = 0;
+ 	p->stick = 0;
+	p->etick = 0;
         release(&ptable.lock);
         return pid;
       }
@@ -311,6 +333,25 @@ wait(int *status)
     // Wait for children to exit.  (See wakeup1 call in proc_exit.)
     sleep(curproc, &ptable.lock);  //DOC: wait-sleep
   }
+}
+
+int
+hasPriority(struct proc *p)
+{
+  struct proc *temp;
+  for(temp = ptable.proc; temp < &ptable.proc[NPROC]; temp++)
+    if(temp->state == RUNNABLE && temp->priority < p->priority)
+      return 0;
+  return 1;
+}
+
+void
+agePriority()
+{
+  struct proc *p;
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    if(p->state == RUNNABLE)
+      p->priority -= 1;
 }
 
 //PAGEBREAK: 42
@@ -334,15 +375,23 @@ scheduler(void)
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
+//    waitPriority();
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
+      if(p->state != RUNNABLE || hasPriority(p) != 1)
         continue;
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
-      // before jumping back to us.
+      // before jumping back to us.      
+      acquire(&tickslock);
+      
+      p->etick += ticks-(p->ctick);
+      release(&tickslock);
+
       c->proc = p;
+
       switchuvm(p);
+      //p->priority += 1;
       p->state = RUNNING;
 
       swtch(&(c->scheduler), p->context);
@@ -388,6 +437,9 @@ void
 yield(void)
 {
   acquire(&ptable.lock);  //DOC: yieldlock
+  acquire(&tickslock);
+  myproc()->ctick = ticks;
+  release(&tickslock);
   myproc()->state = RUNNABLE;
   sched();
   release(&ptable.lock);
@@ -498,6 +550,20 @@ kill(int pid)
   return -1;
 }
 
+int
+setpriority(int priority)
+{
+  struct proc *p = myproc();
+  acquire(&ptable.lock);
+  p->priority = priority;
+  release(&ptable.lock);
+  yield();
+  return 0;
+}
+
+
+
+
 //PAGEBREAK: 36
 // Print a process listing to console.  For debugging.
 // Runs when user types ^P on console.
@@ -548,6 +614,7 @@ waitpid(int pid, int *status, int options)
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->pid != pid)
         continue;
+      p->priority = curproc->priority;
       PidFound=1;
       if(p->state == ZOMBIE){
         rpid = p->pid;
@@ -573,22 +640,3 @@ waitpid(int pid, int *status, int options)
     sleep(curproc, &ptable.lock);  //DOC: wait-sleep
   }
 }
-
-int
-setpriority(int pid, int priority)
-{
-  struct proc *p;
-
-  acquire(&ptable.lock);
-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-    if(p->pid == pid){
-      p->priority = priority;
-      release(&ptable.lock);
-      return p->pid;
-    }
-  }
-  release(&ptable.lock);
-  return -1;
-}
-
-

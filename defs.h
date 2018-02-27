@@ -121,8 +121,9 @@ int             wait(int *status);
 void            wakeup(void*);
 void            yield(void);\
 int		waitpid(int pid, int *status, int options);
-int		setpriority(int pid, int priority);
-int		getpriority(int pid);
+int		setpriority(int priority);
+int		hasPriority(struct proc *p);
+void		agePriority();
 
 // swtch.S
 void            swtch(struct context**, struct context*);
